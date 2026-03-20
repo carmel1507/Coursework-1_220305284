@@ -1,0 +1,245 @@
+---
+title: "The US Opioid Crisis"
+author: "Carmel Solomon"
+date: "March 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: spacelab
+    highlight: tango
+---
+
+
+```{r, echo=FALSE}
+# This code will display the QMUL logo at the top right of the page
+# Do not change this code
+htmltools::img(src = knitr::image_uri("images/QMlogo.png"),
+               alt = 'logo',
+               style = 'position:absolute; top:0; right:0; padding:10px; width:20%;')
+```
+
+![Prescription opioid pills, the starting point of the US opioid crisis.](images/opioid image.png){width=50%}
+
+
+## Introduction
+
+
+The United States opioid crisis is one of the most devastating tragedies in modern history. It developed in three waves. The first wave began in the late 1990s when pharmaceutical companies marketed prescription opioid painkillers which lead to widespread overprescribing. The second wave started in 2010 when people who were addicted to prescription opioids switched to cheaper heroin. The third and deadliest wave began around 2013 with the rise of illegally manufactured fentanyl. This increased the drug supply and caused deaths to surge dramatically.
+
+This report uses time series analysis methods to examine the number of opioid overdose deaths in the US each year from 1999 until 2023. The dataset is sourced from the National Institute on Drug Abuse (NIDA), based on data from the CDC WONDER database.
+
+My aim for this analysis is to examine trends over time in  deaths related to opioid. I will apply Metas Prophet forecasting model to estimate how these deaths may change in the coming years if historical patterns continue.
+
+
+
+
+## 1 Load and Prepare the Data
+
+The data contains annual opioid overdose death counts from 1999 to 2023, sourced from the National Institute on Drug Abuse (NIDA).
+
+```{r, echo=FALSE}
+# Annual opioid-involved overdose death counts, United States, 1999-2023
+# Source: National Institute on Drug Abuse / CDC WONDER
+opioidData <- read.csv("Data.csv")
+opioidYears <- opioidData$Year
+opioidDeaths <- opioidData$OpioidDeaths
+head(opioidData)
+```
+
+The data covers 25 years. Each row represents the year and the corresponding number of opioid overdose deaths, illustrating a clear upward trend over time. The table above displays the first six years of the dataset as a preview.
+
+---
+
+## 2 Initial Visualisation
+
+Before fitting any model, it is useful to plot the raw data to get a sense of the overall trend.
+
+```{r}
+plot(opioidData$Year, opioidData$OpioidDeaths,
+     type = "l",
+     col = "darkred",
+     lwd = 2,
+     main = "US Opioid-Involved Overdose Deaths (1999-2023)",
+     xlab = "Year",
+     ylab = "Number of Deaths")
+
+points(opioidData$Year, opioidData$OpioidDeaths, pch = 16, col = "darkred")
+```
+
+The plot reveals a clear upward trend. Deaths remained relatively low through the early 2000s before accelerating from around 2013, coinciding with the rise of illegally manufactured fentanyl. The slight decrease in 2023 suggests the trend is slowing down, although the numbers are still high.
+
+---
+
+## 3 Exploring Different Time Frames
+
+The opioid crisis occured in three waves. Splitting the data by era reveals how the rate of growth changed over time.
+
+```{r}
+wave1Data <- subset(opioidData, Year <= 2009)
+wave2Data <- subset(opioidData, Year >= 2010 & Year <= 2012)
+wave3Data <- subset(opioidData, Year >= 2013)
+
+plot(opioidData$Year, opioidData$OpioidDeaths,
+     type = "n",
+     main = "Opioid Deaths by Era",
+     xlab = "Year",
+     ylab = "Number of Deaths")
+
+lines(wave1Data$Year, wave1Data$OpioidDeaths, col = "steelblue", lwd = 2)
+lines(wave2Data$Year, wave2Data$OpioidDeaths, col = "orange", lwd = 2)
+lines(wave3Data$Year, wave3Data$OpioidDeaths, col = "darkred", lwd = 2)
+
+legend("topleft",
+       legend = c("Wave 1: Prescription (1999-2009)",
+                  "Wave 2: Heroin (2010-2012)",
+                  "Wave 3: Fentanyl (2013-2023)"),
+       col = c("steelblue", "orange", "darkred"), lwd = 2)
+```
+
+The fentanyl era produced the steepest increase by far. Deaths more than doubled between 2019 and 2021 alone.
+
+```{r}
+cat("Wave 1 average deaths per year:", round(mean(wave1Data$OpioidDeaths), 0), "\n")
+cat("Wave 2 average deaths per year:", round(mean(wave2Data$OpioidDeaths), 0), "\n")
+cat("Wave 3 average deaths per year:", round(mean(wave3Data$OpioidDeaths), 0), "\n")
+```
+
+The average annual death toll in the fentanyl era is more than four times higher than in the prescription era.
+
+---
+
+## 4 Exploratory Analysis
+
+### 4.1 Basic Properties
+
+```{r}
+# Convert to a time series object for further analysis
+opioidTimeSeries <- ts(opioidData$OpioidDeaths, start = 1999, frequency = 1)
+
+# Check key properties
+summary(opioidTimeSeries)
+```
+
+The data is annual, so there is no seasonal pattern. Deaths increased from 8,048 in 1999 to 81,806 in 2022, showing a large rise over time. The median of 18,516 is much lower than the mean of 31,188, showing the data is skewed upwards by the sharp rise in later years.
+
+
+### 4.2 Understanding the Growth Trend
+
+A simple linear regression helps estimate the rate of increase in overdose deaths over time.
+
+```{r}
+linearModel <- lm(OpioidDeaths ~ Year, data = opioidData)
+summary(linearModel)
+
+# Overlay the regression line on the plot
+plot(opioidData$Year, opioidData$OpioidDeaths,
+     type = "l",
+     col = "darkred",
+     lwd = 2,
+     main = "Opioid Deaths with Linear Trend",
+     xlab = "Year",
+     ylab = "Number of Deaths")
+
+abline(linearModel, col = "steelblue", lwd = 2, lty = 2)
+legend("topleft", legend = c("Actual Deaths", "Linear Trend"),
+       col = c("darkred", "steelblue"), lty = c(1, 2), lwd = 2)
+```
+
+On average, opioid overdose deaths increased by around 2,962 deaths per year over the study period. However, the actual data clearly accelerates beyond the straight line in later years, so a model like Prophet is more suitable.
+
+
+### 4.3 Autocorrelation Analysis
+```{r}
+acf(opioidTimeSeries, main = "ACF: Opioid Overdose Deaths")
+pacf(opioidTimeSeries, main = "PACF: Opioid Overdose Deaths")
+```
+
+The ACF shows strong positive correlation, reflecting the upward trend. The PACF has a clear spike at lag 1, suggesting the previous year has the most influence.
+
+
+---
+## 5 Prophet Forecasting
+
+### 5.1 Preparing Data for Prophet
+
+```{r}
+library(prophet)
+
+# Create Prophet-compatible dataframe
+prophetData <- data.frame(
+  ds = as.Date(paste0(opioidData$Year, "-01-01")),
+  y = opioidData$OpioidDeaths
+)
+
+head(prophetData)
+```
+
+Metas Prophet requires data with a date column named `ds` and a value column named `y`. Since our data is annual, dates are set to the 1st of January of each year.
+
+
+
+### 5.2 Fitting the Prophet Model
+
+```{r}
+prophetModel <- prophet(
+  prophetData,
+  yearly.seasonality = FALSE,
+  weekly.seasonality = FALSE,
+  daily.seasonality = FALSE
+)
+```
+
+The Prophet model is fitted to the data to cover the overall trend in opioid overdose deaths. Seasonality is not included because the data is annual and does not contain seasonal patterns. The model detects where the trend shifts, such as the acceleration from 2013 linked to the spread of fentanyl.
+
+
+### 5.3 Forecasting Future Values
+
+```{r}
+futureDates <- make_future_dataframe(prophetModel, periods = 5, freq = "year")
+opioidForecast <- predict(prophetModel, futureDates)
+
+plot(prophetModel, opioidForecast)
+```
+
+The model is used to generate forecasts for the next five years. These forecasts are based on the patterns observed in the historical data. The shaded region shows the 95% uncertainty interval, which widens over time as the forecast becomes less certain.
+
+
+
+### 5.4 Prophet Trend Component
+
+```{r}
+prophet_plot_components(prophetModel, opioidForecast)
+```
+
+The trend component confirms the strong upward direction in opioid deaths, with growth accelerating sharply in the fentanyl era from 2013 onwards.
+
+
+### 5.5 Forecast Table 
+
+```{r}
+forecastTable <- opioidForecast[
+  (nrow(opioidForecast)-5+1):nrow(opioidForecast),
+  c("ds", "yhat", "yhat_lower", "yhat_upper")
+]
+
+forecastTable$ds <- format(forecastTable$ds, "%Y")
+colnames(forecastTable) <- c("Year", "Predicted Deaths", "Lower Bound", "Upper Bound")
+
+forecastTable
+```
+
+The table shows Prophet's predicted opioid overdose deaths for 2024 to 2028. The predicted values remain high and the bounds reflect growing uncertainty the further ahead we forecast.
+
+
+## Conclusion
+
+This analysis used Meta’s Prophet model to examine trends in opioid overdose deaths in the United States between 1999 and 2023. The time series shows a strong upward trend, with a noticeable acceleration in recent years linked to the rise of synthetic opioids such as fentanyl.
+
+The Prophet model successfully captures this trend and produces forecasts suggesting deaths could remain high in the coming years if current patterns continue. However, forecasting models rely on historical data and does not account for future policy changes. Despite this, the results highlight the persistence and severity of the opioid crisis.
+
+
+*Data source: National Institute on Drug Abuse (NIDA), sourced from CDC WONDER. Available at: https://nida.nih.gov/research-topics/trends-statistics/overdose-death-rates*
+
+
+
